@@ -7,6 +7,9 @@ import {
   LANE_RIGHT,
   FORWARD_SPEED,
   LANE_LERP_SPEED,
+  JUMP_DURATION,
+  JUMP_HEIGHT,
+  SLIDE_DURATION,
 } from '../types/game';
 
 interface GameCanvasProps {
@@ -36,14 +39,23 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
   currentLaneRef.current = currentLane;
 
   const targetLaneRef = useRef(currentLane);
-  const playerXRef = useRef(currentLane * LANE_WIDTH);
+  // In camera view facing +Z, Screen Left is World +X, Screen Right is World -X
+  const playerXRef = useRef(-currentLane * LANE_WIDTH);
   const playerZRef = useRef(0);
 
-  // Swipe gesture detection refs
+  // Jump and Slide state refs
+  const isJumpingRef = useRef(false);
+  const jumpTimerRef = useRef(0);
+  const isSlidingRef = useRef(false);
+  const slideTimerRef = useRef(0);
+
+  // Touch gesture detection refs
   const touchStartXRef = useRef<number | null>(null);
   const touchStartYRef = useRef<number | null>(null);
+  const swipeHandledRef = useRef<boolean>(false);
 
   const moveLeft = () => {
+    if (!isRunningRef.current) return;
     if (targetLaneRef.current > LANE_LEFT) {
       targetLaneRef.current -= 1;
       onLaneChange(targetLaneRef.current);
@@ -51,10 +63,35 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
   };
 
   const moveRight = () => {
+    if (!isRunningRef.current) return;
     if (targetLaneRef.current < LANE_RIGHT) {
       targetLaneRef.current += 1;
       onLaneChange(targetLaneRef.current);
     }
+  };
+
+  const jump = () => {
+    if (!isRunningRef.current) return;
+    // Cancel slide if sliding and jump immediately
+    if (isSlidingRef.current) {
+      isSlidingRef.current = false;
+      slideTimerRef.current = 0;
+    }
+    if (!isJumpingRef.current) {
+      isJumpingRef.current = true;
+      jumpTimerRef.current = 0;
+    }
+  };
+
+  const slide = () => {
+    if (!isRunningRef.current) return;
+    // Cancel jump if jumping (fast-fall) and slide immediately
+    if (isJumpingRef.current) {
+      isJumpingRef.current = false;
+      jumpTimerRef.current = 0;
+    }
+    isSlidingRef.current = true;
+    slideTimerRef.current = 0;
   };
 
   // Respond to prop triggers from on-screen buttons
@@ -180,6 +217,10 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     // 4. Simple 3D Player Character Placeholder
     const playerGroup = new THREE.Group();
 
+    // Body group for vertical jump / slide crouching
+    const characterGroup = new THREE.Group();
+    playerGroup.add(characterGroup);
+
     // Torso
     const torsoGeo = new THREE.BoxGeometry(0.7, 0.9, 0.5);
     const torsoMat = new THREE.MeshStandardMaterial({
@@ -189,7 +230,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     const torso = new THREE.Mesh(torsoGeo, torsoMat);
     torso.position.y = 0.95;
     torso.castShadow = true;
-    playerGroup.add(torso);
+    characterGroup.add(torso);
 
     // Head
     const headGeo = new THREE.BoxGeometry(0.5, 0.5, 0.5);
@@ -200,14 +241,14 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     const head = new THREE.Mesh(headGeo, headMat);
     head.position.y = 1.7;
     head.castShadow = true;
-    playerGroup.add(head);
+    characterGroup.add(head);
 
     // Visor (indicates forward orientation)
     const visorGeo = new THREE.BoxGeometry(0.42, 0.16, 0.08);
     const visorMat = new THREE.MeshBasicMaterial({ color: 0x0f172a });
     const visor = new THREE.Mesh(visorGeo, visorMat);
     visor.position.set(0, 1.72, 0.26);
-    playerGroup.add(visor);
+    characterGroup.add(visor);
 
     // Limbs: Left & Right Legs
     const legGeo = new THREE.BoxGeometry(0.24, 0.65, 0.24);
@@ -219,12 +260,12 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     const leftLeg = new THREE.Mesh(legGeo, legMat);
     leftLeg.position.set(-0.2, 0.35, 0);
     leftLeg.castShadow = true;
-    playerGroup.add(leftLeg);
+    characterGroup.add(leftLeg);
 
     const rightLeg = new THREE.Mesh(legGeo, legMat);
     rightLeg.position.set(0.2, 0.35, 0);
     rightLeg.castShadow = true;
-    playerGroup.add(rightLeg);
+    characterGroup.add(rightLeg);
 
     // Limbs: Left & Right Arms
     const armGeo = new THREE.BoxGeometry(0.18, 0.6, 0.18);
@@ -236,14 +277,14 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     const leftArm = new THREE.Mesh(armGeo, armMat);
     leftArm.position.set(-0.46, 0.95, 0);
     leftArm.castShadow = true;
-    playerGroup.add(leftArm);
+    characterGroup.add(leftArm);
 
     const rightArm = new THREE.Mesh(armGeo, armMat);
     rightArm.position.set(0.46, 0.95, 0);
     rightArm.castShadow = true;
-    playerGroup.add(rightArm);
+    characterGroup.add(rightArm);
 
-    // Ground Contact Shadow
+    // Ground Contact Shadow (remains on road plane at y = 0.02)
     const shadowGeo = new THREE.PlaneGeometry(1.0, 0.8);
     shadowGeo.rotateX(-Math.PI / 2);
     const shadowMat = new THREE.MeshBasicMaterial({
@@ -264,6 +305,10 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         moveLeft();
       } else if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') {
         moveRight();
+      } else if (e.key === 'ArrowUp' || e.key === 'w' || e.key === 'W' || e.key === ' ') {
+        jump();
+      } else if (e.key === 'ArrowDown' || e.key === 's' || e.key === 'S') {
+        slide();
       }
     };
 
@@ -271,40 +316,92 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
       if (!isRunningRef.current || e.touches.length === 0) return;
       touchStartXRef.current = e.touches[0].clientX;
       touchStartYRef.current = e.touches[0].clientY;
+      swipeHandledRef.current = false;
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (!isRunningRef.current || touchStartXRef.current === null || swipeHandledRef.current) return;
+      if (e.touches.length === 0) return;
+
+      const currentX = e.touches[0].clientX;
+      const currentY = e.touches[0].clientY;
+      const dx = currentX - touchStartXRef.current;
+      const dy = currentY - (touchStartYRef.current ?? currentY);
+
+      const threshold = 25; // 25px threshold for quick touch response
+      if (Math.abs(dx) > threshold || Math.abs(dy) > threshold) {
+        swipeHandledRef.current = true;
+        if (Math.abs(dx) > Math.abs(dy)) {
+          if (dx < 0) {
+            moveLeft();
+          } else {
+            moveRight();
+          }
+        } else {
+          if (dy < 0) {
+            jump();
+          } else {
+            slide();
+          }
+        }
+      }
     };
 
     const handleTouchEnd = (e: TouchEvent) => {
       if (!isRunningRef.current || touchStartXRef.current === null) return;
-      const touchEndX = e.changedTouches[0].clientX;
-      const touchEndY = e.changedTouches[0].clientY;
-      const dx = touchEndX - touchStartXRef.current;
-      const dy = touchEndY - (touchStartYRef.current ?? touchEndY);
+      if (!swipeHandledRef.current && e.changedTouches.length > 0) {
+        const touchEndX = e.changedTouches[0].clientX;
+        const touchEndY = e.changedTouches[0].clientY;
+        const dx = touchEndX - touchStartXRef.current;
+        const dy = touchEndY - (touchStartYRef.current ?? touchEndY);
+        const threshold = 25;
 
-      const threshold = 30; // 30px swipe threshold
-      if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > threshold) {
-        if (dx < 0) {
-          moveLeft();
+        if (Math.abs(dx) > threshold || Math.abs(dy) > threshold) {
+          if (Math.abs(dx) > Math.abs(dy)) {
+            if (dx < 0) moveLeft();
+            else moveRight();
+          } else {
+            if (dy < 0) jump();
+            else slide();
+          }
         } else {
-          moveRight();
-        }
-      } else if (Math.abs(dx) <= threshold && Math.abs(dy) <= threshold) {
-        // Tap gesture: Left half = move left, Right half = move right
-        const rect = container.getBoundingClientRect();
-        const tapX = touchEndX - rect.left;
-        if (tapX < rect.width * 0.45) {
-          moveLeft();
-        } else if (tapX > rect.width * 0.55) {
-          moveRight();
+          // Tap gesture
+          const rect = container.getBoundingClientRect();
+          const tapX = touchEndX - rect.left;
+          const tapY = touchEndY - rect.top;
+          const relX = tapX / rect.width;
+          const relY = tapY / rect.height;
+
+          if (relX < 0.38) {
+            moveLeft();
+          } else if (relX > 0.62) {
+            moveRight();
+          } else {
+            if (relY < 0.5) {
+              jump();
+            } else {
+              slide();
+            }
+          }
         }
       }
 
       touchStartXRef.current = null;
       touchStartYRef.current = null;
+      swipeHandledRef.current = false;
+    };
+
+    const handleTouchCancel = () => {
+      touchStartXRef.current = null;
+      touchStartYRef.current = null;
+      swipeHandledRef.current = false;
     };
 
     window.addEventListener('keydown', handleKeyDown);
     container.addEventListener('touchstart', handleTouchStart, { passive: true });
+    container.addEventListener('touchmove', handleTouchMove, { passive: true });
     container.addEventListener('touchend', handleTouchEnd, { passive: true });
+    container.addEventListener('touchcancel', handleTouchCancel, { passive: true });
 
     // 6. Resize Handler
     const handleResize = () => {
@@ -333,30 +430,97 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         playerZRef.current += FORWARD_SPEED * dt;
         onDistanceUpdate(Math.floor(playerZRef.current));
 
-        // Smooth lane interpolation
-        const targetX = targetLaneRef.current * LANE_WIDTH;
+        // Smooth lane interpolation:
+        // In camera perspective facing +Z, Screen Left is World +X, Screen Right is World -X.
+        // LANE_LEFT is -1 => targetX = -(-1) * LANE_WIDTH = +2.4 (Screen Left)
+        // LANE_RIGHT is 1 => targetX = -(1) * LANE_WIDTH = -2.4 (Screen Right)
+        const targetX = -targetLaneRef.current * LANE_WIDTH;
         playerXRef.current += (targetX - playerXRef.current) * LANE_LERP_SPEED * dt;
 
-        // Banking tilt when moving horizontally
-        const rollAngle = (targetX - playerXRef.current) * -0.22;
+        // Banking tilt when moving horizontally (tilts into the turn)
+        const rollAngle = (targetX - playerXRef.current) * -0.15;
         playerGroup.rotation.z = THREE.MathUtils.lerp(
           playerGroup.rotation.z,
           rollAngle,
           0.2
         );
 
-        // Runner stride & vertical bounce animation
-        runCycle += dt * 14;
-        const stride = Math.sin(runCycle);
-        leftLeg.rotation.x = stride * 0.75;
-        rightLeg.rotation.x = -stride * 0.75;
-        leftArm.rotation.x = -stride * 0.65;
-        rightArm.rotation.x = stride * 0.65;
+        // Jump trajectory calculation
+        let jumpY = 0;
+        if (isJumpingRef.current) {
+          jumpTimerRef.current += dt;
+          const progress = jumpTimerRef.current / JUMP_DURATION;
+          if (progress >= 1.0) {
+            isJumpingRef.current = false;
+            jumpTimerRef.current = 0;
+            jumpY = 0;
+          } else {
+            jumpY = Math.sin(progress * Math.PI) * JUMP_HEIGHT;
+          }
+        }
 
-        const bounceY = Math.abs(Math.sin(runCycle * 2)) * 0.08;
-        torso.position.y = 0.95 + bounceY;
-        head.position.y = 1.7 + bounceY;
-        visor.position.y = 1.72 + bounceY;
+        // Slide calculation
+        if (isSlidingRef.current) {
+          slideTimerRef.current += dt;
+          if (slideTimerRef.current >= SLIDE_DURATION) {
+            isSlidingRef.current = false;
+            slideTimerRef.current = 0;
+          }
+        }
+
+        if (isJumpingRef.current) {
+          characterGroup.position.y = jumpY;
+          characterGroup.scale.set(1, 1, 1);
+          characterGroup.rotation.x = 0;
+          leftLeg.rotation.x = -0.35;
+          rightLeg.rotation.x = -0.2;
+          leftArm.rotation.x = -0.5;
+          rightArm.rotation.x = -0.5;
+          torso.position.y = 0.95;
+          head.position.y = 1.7;
+          visor.position.y = 1.72;
+
+          shadow.scale.set(
+            Math.max(0.4, 1.0 - jumpY * 0.25),
+            Math.max(0.4, 1.0 - jumpY * 0.25),
+            1
+          );
+          shadowMat.opacity = Math.max(0.12, 0.35 - jumpY * 0.1);
+        } else if (isSlidingRef.current) {
+          characterGroup.position.y = 0;
+          characterGroup.scale.set(1.05, 0.45, 1.35);
+          characterGroup.rotation.x = 0.2;
+          leftLeg.rotation.x = -1.1;
+          rightLeg.rotation.x = -1.1;
+          leftArm.rotation.x = 0.8;
+          rightArm.rotation.x = 0.8;
+          torso.position.y = 0.95;
+          head.position.y = 1.7;
+          visor.position.y = 1.72;
+
+          shadow.scale.set(1.1, 1.3, 1.0);
+          shadowMat.opacity = 0.4;
+        } else {
+          characterGroup.position.y = 0;
+          characterGroup.scale.set(1, 1, 1);
+          characterGroup.rotation.x = 0;
+
+          // Runner stride & vertical bounce animation
+          runCycle += dt * 14;
+          const stride = Math.sin(runCycle);
+          leftLeg.rotation.x = stride * 0.75;
+          rightLeg.rotation.x = -stride * 0.75;
+          leftArm.rotation.x = -stride * 0.65;
+          rightArm.rotation.x = stride * 0.65;
+
+          const bounceY = Math.abs(Math.sin(runCycle * 2)) * 0.08;
+          torso.position.y = 0.95 + bounceY;
+          head.position.y = 1.7 + bounceY;
+          visor.position.y = 1.72 + bounceY;
+
+          shadow.scale.set(1, 1, 1);
+          shadowMat.opacity = 0.35;
+        }
 
         // Position player in world
         playerGroup.position.set(playerXRef.current, 0, playerZRef.current);
@@ -364,12 +528,12 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         // Smooth camera follow (chase cam)
         camera.position.set(
           playerXRef.current * 0.45,
-          3.2,
+          3.2 + jumpY * 0.25,
           playerZRef.current - 5.5
         );
         camera.lookAt(
           playerXRef.current * 0.2,
-          1.2,
+          1.2 + jumpY * 0.15,
           playerZRef.current + 8.0
         );
 
@@ -397,7 +561,9 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('resize', handleResize);
       container.removeEventListener('touchstart', handleTouchStart);
+      container.removeEventListener('touchmove', handleTouchMove);
       container.removeEventListener('touchend', handleTouchEnd);
+      container.removeEventListener('touchcancel', handleTouchCancel);
       if (renderer.domElement.parentNode === container) {
         container.removeChild(renderer.domElement);
       }
@@ -408,7 +574,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
   return (
     <div
       ref={mountRef}
-      className="relative w-full h-full cursor-pointer select-none overflow-hidden"
+      className="relative w-full h-full cursor-pointer select-none overflow-hidden touch-none"
       data-testid="game_canvas"
     />
   );
