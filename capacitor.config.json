@@ -1,0 +1,8 @@
+{
+  "appId": "com.example.endlessrunner",
+  "appName": "3D Endless Runner",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  }
+}
