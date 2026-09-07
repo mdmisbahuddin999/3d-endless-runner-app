@@ -20,6 +20,9 @@ android {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            // For testing-only builds on physical devices, sign the release APK using the standard debug keystore.
+            // NOTE: For final Google Play production distribution, replace this with a production release keystore.
+            signingConfig signingConfigs.debug
         }
     }
 }
